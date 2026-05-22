@@ -1,0 +1,54 @@
+name: Update Steam Top Sellers Ranks
+
+on:
+  schedule:
+    # Every hour at minute 15 (spread load, avoid :00 spikes)
+    - cron: "15 * * * *"
+  workflow_dispatch:  # Allow manual trigger from GitHub UI
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch ranks from games-popularity.com
+        run: |
+          curl -s \
+            -H "Accept: application/json" \
+            -H "User-Agent: SteamRankExtension/1.0 (github-actions-updater)" \
+            "https://games-popularity.com/swagger/api/top-sellers" \
+            -o raw.json
+
+          # Validate: must be valid JSON with a "data" array
+          python3 -c "
+          import json, sys
+          with open('raw.json') as f:
+              data = json.load(f)
+          items = data.get('data', [])
+          if not items:
+              print('ERROR: empty data array', file=sys.stderr)
+              sys.exit(1)
+          # Build compact rank map: { steamId: position }
+          ranks = {item['steamId']: item['position'] for item in items}
+          output = {
+              'updatedAt': data.get('validTimeUtc', ''),
+              'generatedAt': __import__('datetime').datetime.utcnow().isoformat() + 'Z',
+              'total': len(ranks),
+              'ranks': ranks
+          }
+          with open('ranks.json', 'w') as f:
+              json.dump(output, f, separators=(',',':'))
+          print(f'OK: {len(ranks)} games written to ranks.json')
+          "
+
+      - name: Publish to GitHub Pages (gh-pages branch)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: .
+          include_files: ranks.json
+          commit_message: "chore: update ranks (${{ github.run_number }})"
+          force_orphan: false
